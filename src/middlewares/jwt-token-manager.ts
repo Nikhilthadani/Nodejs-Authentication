@@ -1,5 +1,33 @@
-import { sign, verify } from "jsonwebtoken";
-import { cacheValue } from "../redis/actions";
+import { decode, JwtPayload, sign, verify } from "jsonwebtoken";
+import { setCache } from "../redis/actions";
+type JwtData = {
+  id: string;
+  email: string;
+  iat: number;
+  exp: number;
+};
+
+function getSecondsToExpire(token: string) {
+  try {
+    // Decode the token without verifying signature
+    const decoded = decode(token) as JwtPayload;
+
+    if (!decoded || !decoded.exp) {
+      throw new Error("Token does not have an 'exp' claim.");
+    }
+
+    // Current time in seconds
+    const currentTime = Math.floor(Date.now() / 1000);
+
+    // Remaining seconds
+    const secondsToExpire = decoded!.exp! - currentTime;
+
+    return secondsToExpire > 0 ? secondsToExpire : 0; // Return 0 if already expired
+  } catch (err) {
+    console.error("Error decoding token:", err);
+    return null; // Return null on error
+  }
+}
 
 const createToken = (
   id: string,
@@ -11,7 +39,7 @@ const createToken = (
   });
 };
 
-const decryptToken = (token: string) => {
+const decryptToken = (token: string): Promise<null | JwtData> => {
   return new Promise((res) => {
     return verify(token, process.env.JWT_SECRET!, (err, payload) => {
       if (err) {
@@ -19,7 +47,7 @@ const decryptToken = (token: string) => {
         return res(null);
       } else {
         console.log("Token Decrypted: ", JSON.stringify(payload));
-        return res(payload);
+        return res(payload as JwtData);
       }
     });
   });
@@ -40,10 +68,14 @@ const updateToken = async (
 };
 
 const saveRefreshToken = async (userId: string, token: string) => {
-  const key = userId;
-  const mod = "mysql";
+  const mod = "auth";
   try {
-    await cacheValue(mod, userId, token);
+    const expiry = getSecondsToExpire(token);
+    if (!expiry || expiry === 0) {
+      console.log("Expired token");
+      return;
+    }
+    await setCache(mod, userId, token, expiry);
     console.log("Refresh token saved for user: ", userId);
     return;
   } catch (error) {

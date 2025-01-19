@@ -29,6 +29,16 @@ app.use(
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
+app.use((req, res, next) => {
+  console.log("------------------");
+
+  console.log("Request Received at: ", req.url);
+  console.log("Request Data: ", req.body);
+  console.log("Request Cookie: ", req.headers.cookie);
+
+  console.log("------------------");
+  next();
+});
 app.use("/api/v1", appRouter);
 
 export default app;
