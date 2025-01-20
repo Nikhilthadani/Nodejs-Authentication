@@ -6,18 +6,62 @@ import {
   decryptToken,
   saveRefreshToken,
 } from "./jwt-token-manager";
+import { decode, JwtPayload } from "jsonwebtoken";
+
 const algorithm = "aes-256-cbc";
 const key = crypto.randomBytes(32);
 const iv = crypto.randomBytes(16);
-const validateWithRedisAndJwt = async (
-  topkenFromClient: string,
-  tokenFromRedis: string
-) => {
-  if (tokenFromRedis === topkenFromClient) {
-    const decodeRedisToken = await decryptToken(tokenFromRedis);
-    const decodeClienToken = await decryptToken(topkenFromClient);
+
+function getSecondsToExpire(tokenExp: number) {
+  const currentTime = Math.floor(Date.now() / 1000);
+
+  const secondsToExpire = tokenExp - currentTime;
+
+  return secondsToExpire > 0 ? secondsToExpire : 0; // Return 0 if already expired
+}
+
+async function validateAccessToken(accessToken: string) {
+  const decryptedData = await decryptToken(accessToken);
+  if (decryptedData) {
+    return { ...decryptedData };
+  } else {
+    return false;
   }
-};
+}
+
+async function validateRefreshToken(refreshToken: string) {
+  const encryptedToken = decryptData(refreshToken);
+  const decryptedData = await decryptToken(encryptedToken);
+  if (!decryptedData) return false;
+
+  const tokenFromCache = await getCache("auth", decryptedData.id);
+  if (!tokenFromCache) {
+    console.log("tokenFromCache not valid");
+    return false;
+  }
+  if (tokenFromCache !== refreshToken) {
+    console.log("Token mismatch from what we have");
+    return false;
+  }
+
+  const tokenFromCacheDecrypted = await decryptToken(
+    decryptData(tokenFromCache)
+  );
+  if (!tokenFromCacheDecrypted) {
+    console.log(
+      "Token expired in cache: tokenFromCacheDecrypted cant be decrypted"
+    );
+    return false;
+  }
+
+  const ttl = getSecondsToExpire(tokenFromCacheDecrypted.exp);
+  if (ttl <= 0) {
+    console.log("Token time expired:: ", ttl);
+    return;
+  }
+  return { ...tokenFromCacheDecrypted };
+}
+
 export const validateToken = async (
   req: Request,
   res: Response,
@@ -27,72 +71,53 @@ export const validateToken = async (
   const accessToken = bearer.split("=")[1];
   const refreshToken = refresh.split("=")[1];
 
-  const decodedAccessToken = await decryptToken(accessToken);
-  if (decodedAccessToken) {
-    console.log("Access token is valid!");
-    return res
-      .status(200)
-      .json({ message: "Token authorization successful", success: true });
-  }
+  //---------------------
+  const isAccessTokenValid = await validateAccessToken(accessToken.trim());
+  const decodedRefreshToken = await validateRefreshToken(refreshToken.trim());
 
-  const decryptedRefreshToken = await decryptToken(
-    decryptData(refreshToken.trim())
-  );
-  if (!decryptedRefreshToken) {
-    return res
-      .status(401)
-      .json({ message: "Refresh token expired, please login again" });
-  }
-
-  console.log("Refresh token valid, generating new Access, Refresh tokens...");
-
-  console.log("Decrypted refresh token::", decryptedRefreshToken);
-
-  const cacheValue = await getCache("auth", decryptedRefreshToken.id);
-
-  if (!cacheValue) {
-    return res.status(401).json({
-      message: "Refresh token expired",
-      success: false,
-    });
-  }
-
-  // if cache is available, refreshtoken is avalialble, validate eqality and expiry;
-  if (cacheValue.trim() !== refreshToken.trim()) {
-    return res
-      .status(401)
-      .json({ message: "Refresh token is tampered", success: false });
-  }
-
-  const decodedCache = await decryptToken(decryptData(cacheValue));
-  if (decodedCache?.exp === decryptedRefreshToken.exp) {
-    // generate new access token
+  if (isAccessTokenValid && decodedRefreshToken) {
+    console.log("Access, Refresh token valid: Sending response back");
+    return res.status(200).json({ message: "Authorized", success: true });
+  } else if (!isAccessTokenValid && decodedRefreshToken) {
+    // regenerate access, refresh token
     const newAccessToken = createToken(
-      decodedCache.id,
-      decodedCache.email,
+      decodedRefreshToken.id,
+      decodedRefreshToken.email,
       "access"
     );
+
     const newRefreshToken = encryptData(
-      createToken(decodedCache.id, decodedCache.email, "refresh")
+      createToken(decodedRefreshToken.id, decodedRefreshToken.email, "refresh")
     );
 
-    await saveRefreshToken(decodedCache.id, newRefreshToken);
     console.log(
-      "New tokens generated and saved in cache",
-      newAccessToken,
-      newRefreshToken
+      "new access, refresh tokens generated: ",
+      accessToken,
+      refreshToken
     );
-
-    return res.status(201).json({
-      message: "New tokens generated, update them!",
+    await saveRefreshToken(decodedRefreshToken.id, newRefreshToken);
+    res.cookie("auth_token", newAccessToken, {
+      domain: "localhost",
+      path: "/",
+      httpOnly: true,
+      sameSite: "lax",
+      secure: process.env.NODE_ENV === "production",
+    });
+    res.cookie("refresh_token", newRefreshToken, {
+      domain: "localhost",
+      path: "/",
+      httpOnly: true,
+      sameSite: "lax",
+      secure: process.env.NODE_ENV === "production",
+    });
+    return res.status(200).json({
+      message: "New access, refresh tokens generated: ",
       success: true,
-      access_token: newAccessToken,
-      refresh_token: newRefreshToken,
+      accessToken: newAccessToken,
+      refreshToken: newRefreshToken,
     });
   } else {
-    res
-      .status(401)
-      .json({ message: "Something went wrong, token expiry invalid" });
+    res.status(401).json({ message: "Not authorized", success: false });
   }
 };
 

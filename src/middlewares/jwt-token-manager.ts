@@ -1,5 +1,6 @@
 import { decode, JwtPayload, sign, verify } from "jsonwebtoken";
 import { setCache } from "../redis/actions";
+import { decryptData } from "./jwt-validator";
 type JwtData = {
   id: string;
   email: string;
@@ -9,10 +10,12 @@ type JwtData = {
 
 function getSecondsToExpire(token: string) {
   try {
+    token = decryptData(token);
     // Decode the token without verifying signature
     const decoded = decode(token) as JwtPayload;
 
     if (!decoded || !decoded.exp) {
+      console.log("Token does not have an 'exp' claim.");
       throw new Error("Token does not have an 'exp' claim.");
     }
 
@@ -35,7 +38,7 @@ const createToken = (
   tokenType: "access" | "refresh"
 ) => {
   return sign({ id, email }, process.env.JWT_SECRET!, {
-    expiresIn: tokenType === "access" ? "7h" : "7d",
+    expiresIn: tokenType === "access" ? "15" : "7d",
   });
 };
 
